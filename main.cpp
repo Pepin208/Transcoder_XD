@@ -45,6 +45,8 @@ struct UserConfig {
     std::string bin_path = "";
     bool enable_10bit = false;
     bool ffmpeg_ready = false; // Estado de verificación de binarios
+    std::string hwaccel_device = ""; // Para Linux (/dev/dri/renderD*)
+    std::string encoder_profile = ""; // Speed, Balanced, Quality
 };
 
 UserConfig g_config;
@@ -120,6 +122,8 @@ void saveConfig() {
         if (!g_config.bin_path.empty()) file << "BIN_PATH=" << g_config.bin_path << "\n";
         file << "ENABLE_10BIT=" << (g_config.enable_10bit ? "1" : "0") << "\n";
         file << "FFMPEG_READY=" << (g_config.ffmpeg_ready ? "1" : "0") << "\n";
+        if (!g_config.hwaccel_device.empty()) file << "HWACCEL_DEVICE=" << g_config.hwaccel_device << "\n";
+        if (!g_config.encoder_profile.empty()) file << "ENCODER_PROFILE=" << g_config.encoder_profile << "\n";
         file.close();
     }
 }
@@ -174,6 +178,12 @@ bool loadConfig() {
 
         } else if (key == "FFMPEG_READY") {
             g_config.ffmpeg_ready = (value == "1" || value == "true");
+
+        } else if (key == "HWACCEL_DEVICE") {
+            g_config.hwaccel_device = value;
+
+        } else if (key == "ENCODER_PROFILE") {
+            g_config.encoder_profile = value;
         }
     }
     file.close();
@@ -424,6 +434,11 @@ HardwareNames getSystemHardwareNames() {
             if (fgets(buf, sizeof(buf), p)) hw.cpu_name = trim(std::string(buf));
             PCLOSE(p);
         }
+
+        // Si no hay GPU listada explícitamente pero es Apple Silicon, lo asignamos por defecto
+        if (hw.gpu_names.empty() && hw.cpu_name.find("Apple") != std::string::npos) {
+            hw.gpu_names.push_back("Apple Silicon");
+        }
     }
 
     #else
@@ -451,12 +466,16 @@ HardwareNames getSystemHardwareNames() {
                 if (dir_name.rfind("card", 0) == 0 && dir_name.find('-') == std::string::npos) {
                     std::ifstream vendor_file(entry.path() / "device/vendor");
                     std::string vendor_id;
+                    std::string gpu_name = "GPU_Desconocida";
                     if (std::getline(vendor_file, vendor_id)) {
                         vendor_id = trim(vendor_id);
-                        if (vendor_id == "0x1002") hw.gpu_names.push_back("AMD");
-                        else if (vendor_id == "0x8086") hw.gpu_names.push_back("Intel");
-                        else if (vendor_id == "0x10de") hw.gpu_names.push_back("NVIDIA");
-                        else hw.gpu_names.push_back("GPU_Desconocida_" + vendor_id);
+                        if (vendor_id == "0x1002") gpu_name = "AMD";
+                        else if (vendor_id == "0x8086") gpu_name = "Intel";
+                        else if (vendor_id == "0x10de") gpu_name = "NVIDIA";
+                        else gpu_name += "_" + vendor_id;
+                    }
+                    if (std::find(hw.gpu_names.begin(), hw.gpu_names.end(), gpu_name) == hw.gpu_names.end()) {
+                        hw.gpu_names.push_back(gpu_name);
                     }
                 }
             }
@@ -495,17 +514,25 @@ std::vector<EncoderOption> detectEncoders() {
     };
 
     // Test encode real — 1 frame, silencioso
-    auto testEncoder = [&](const std::string& enc) -> bool {
+    auto testEncoder = [&](const std::string& enc, const std::string& hwaccel_dev = "") -> bool {
         std::string cmd = getBinPath("ffmpeg");
+
+        if (!hwaccel_dev.empty()) {
+            if (enc == "hevc_vaapi") cmd += " -vaapi_device " + hwaccel_dev;
+        }
 
         // AMF requiere parámetros mínimos explícitos para inicializarse
         if (enc == "hevc_amf") {
-            cmd += " -f lavfi -i nullsrc=s=128x128:r=24"
+            cmd += " -f lavfi -i nullsrc=s=256x256:r=24"
             " -vf format=yuv420p -frames:v 1"
             " -c:v hevc_amf -rc cqp -qp_i 20 -qp_p 20"
             " -f null -";
+        } else if (enc == "hevc_vaapi") {
+            cmd += " -f lavfi -i nullsrc=s=256x256:d=1 -frames:v 1"
+            " -vf format=nv12,hwupload"
+            " -c:v " + enc + " -f null -";
         } else {
-            cmd += " -f lavfi -i nullsrc=s=64x64:d=1 -frames:v 1"
+            cmd += " -f lavfi -i nullsrc=s=256x256:d=1 -frames:v 1"
             " -c:v " + enc + " -f null -";
         }
 
@@ -529,52 +556,87 @@ std::vector<EncoderOption> detectEncoders() {
         bool use_gpu_name;        // false = usar cpu_name (libx265)
     };
 
-    const std::vector<EncoderDef> candidates = {
+    std::vector<EncoderDef> candidates;
+
+    #if defined(__APPLE__)
+    candidates = {
+        {"hevc_videotoolbox", "apple",   "H265 Apple",   true},
+        {"hevc_videotoolbox", "intel",   "H265 Intel",   true},
+        {"hevc_videotoolbox", "amd",     "H265 AMD",     true},
+        {"libx265",           "",        "H265 CPU",     false},
+    };
+    #elif defined(__linux__)
+    candidates = {
+        {"hevc_vaapi",        "amd",     "H265 VAAPI AMD",     true},
+        {"hevc_vaapi",        "intel",   "H265 VAAPI Intel",   true},
+        {"hevc_nvenc",        "nvidia",  "H265 NVIDIA",        true},
+        {"libx265",           "",        "H265 CPU",           false},
+    };
+    #else
+    candidates = {
         {"hevc_nvenc",        "nvidia",  "H265 NVIDIA",  true},
         {"hevc_nvenc",        "geforce", "H265 NVIDIA",  true},
         {"hevc_amf",          "amd",     "H265 AMD",     true},
         {"hevc_amf",          "radeon",  "H265 AMD",     true},
         {"hevc_qsv",          "intel",   "H265 Intel",   true},
-        {"hevc_videotoolbox", "apple",   "H265 Apple",   true},
-        {"hevc_videotoolbox", "amd",     "H265 GPU",     true},
         {"libx265",           "",        "H265 CPU",     false},
     };
+    #endif
 
     // encoder_id → ya fue agregado con ese label_prefix
-    // permite Intel iGPU + Intel Arc como dos entradas distintas
-    // pero evita duplicar el mismo encoder con el mismo fabricante
-    std::map<std::string, std::set<std::string>> added; // id -> set de gpu_names ya agregados
+    std::map<std::string, std::set<std::string>> added;
 
     for (const auto& cand : candidates) {
 
         if (!cand.use_gpu_name) {
-            // libx265 — CPU, se prueba una sola vez
+            // libx265 — CPU
             if (added.count(cand.id)) continue;
             if (!testEncoder(cand.id)) continue;
             std::string label = cand.label_prefix + " (" + hw.cpu_name + ")";
             available.push_back({cand.id, label});
-            added[cand.id]; // marca como agregado
+            added[cand.id];
             continue;
         }
 
-        // GPU — obtener TODAS las que matchean el keyword
         std::vector<std::string> gpus = findAllGpus(cand.gpu_keyword);
         if (gpus.empty()) continue;
 
         for (const std::string& gpu_name : gpus) {
-
-            // Evitar agregar el mismo encoder para la misma GPU dos veces
-            // (puede pasar si una GPU matchea "nvidia" Y "geforce")
             if (added[cand.id].count(gpu_name)) continue;
 
-            // Test encode — si falla esta GPU con este encoder, la descarta
-            if (!testEncoder(cand.id)) {
+            bool success = false;
+            std::string selected_dev = "";
+
+            #ifdef __linux__
+            if (cand.id == "hevc_vaapi") {
+                // Iterar sobre /dev/dri/renderD*
+                for (int i = 128; i < 140; ++i) {
+                    std::string dev_path = "/dev/dri/renderD" + std::to_string(i);
+                    if (fs::exists(dev_path)) {
+                        if (testEncoder(cand.id, dev_path)) {
+                            success = true;
+                            selected_dev = dev_path;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                success = testEncoder(cand.id);
+            }
+            #else
+            success = testEncoder(cand.id);
+            #endif
+
+            if (!success) {
                 std::cout << "  [!] " << gpu_name
                 << " no soporta " << cand.id << ", descartado.\n";
                 continue;
             }
 
             std::string label = cand.label_prefix + " (" + gpu_name + ")";
+            if (!selected_dev.empty()) {
+                label += " [" + selected_dev + "]";
+            }
             available.push_back({cand.id, label});
             added[cand.id].insert(gpu_name);
         }
@@ -611,10 +673,17 @@ std::string buildFfmpegCommand(
         std::cerr << "[ERROR] buildFfmpegCommand: encoder no configurado.\n";
         return "";
     }
+    #ifdef __APPLE__
+    if (g_config.quality_q < 1 || g_config.quality_q > 100) {
+        std::cerr << "[ERROR] buildFfmpegCommand: quality_q inválido (" << g_config.quality_q << ").\n";
+        return "";
+    }
+    #else
     if (g_config.quality_q < 0 || g_config.quality_q > 51) {
         std::cerr << "[ERROR] buildFfmpegCommand: quality_q inválido (" << g_config.quality_q << ").\n";
         return "";
     }
+    #endif
     if (g_config.opus_bitrate.empty()) {
         std::cerr << "[ERROR] buildFfmpegCommand: opus_bitrate no configurado.\n";
         return "";
@@ -633,39 +702,75 @@ std::string buildFfmpegCommand(
     cmd << getBinPath("ffmpeg") << " -y ";
 
     // Hardware accel según encoder
-    if      (g_config.encoder == "hevc_nvenc")        cmd << "-hwaccel cuda -hwaccel_output_format cuda ";
-    else if (g_config.encoder == "hevc_qsv")          cmd << "-hwaccel qsv -hwaccel_output_format qsv ";
-    else if (g_config.encoder == "hevc_videotoolbox") cmd << "-hwaccel videotoolbox ";
-    else if (g_config.encoder == "hevc_amf")          cmd << "-hwaccel auto ";
+    if (g_config.encoder == "hevc_nvenc") {
+        cmd << "-hwaccel cuda -hwaccel_output_format cuda ";
+    } else if (g_config.encoder == "hevc_qsv") {
+        cmd << "-hwaccel qsv -hwaccel_output_format qsv ";
+    } else if (g_config.encoder == "hevc_videotoolbox") {
+        cmd << "-hwaccel videotoolbox ";
+    } else if (g_config.encoder == "hevc_vaapi") {
+        if (!g_config.hwaccel_device.empty()) {
+            cmd << "-vaapi_device " << g_config.hwaccel_device << " ";
+        }
+        cmd << "-hwaccel vaapi -hwaccel_output_format vaapi ";
+    } else if (g_config.encoder == "hevc_amf") {
+        cmd << "-hwaccel auto ";
+    }
 
     // Input
     cmd << "-i \"" << input_file << "\" ";
 
+    // Si es VAAPI, inyectamos el filtro de formato
+    if (g_config.encoder == "hevc_vaapi") {
+        cmd << "-vf \"format=nv12,hwupload\" ";
+    }
+
     // Encoder + parámetros de calidad
     cmd << "-c:v " << g_config.encoder << " ";
 
+    std::string profile = g_config.encoder_profile;
+
     if (g_config.encoder == "hevc_nvenc") {
+        std::string preset = "p4"; // balanced
+        if (profile == "speed") preset = "p1";
+        else if (profile == "quality") preset = "p7";
+
         cmd << "-rc:v vbr -cq:v " << q
         << " -qmin:v " << q << " -qmax:v " << q
-        << " -preset p5 " << pix_fmt;
+        << " -preset " << preset << " " << pix_fmt;
 
     } else if (g_config.encoder == "hevc_qsv") {
+        std::string preset = "medium"; // balanced
+        if (profile == "speed") preset = "veryfast";
+        else if (profile == "quality") preset = "veryslow";
+
         cmd << "-global_quality:v " << q
-        << " -preset slow -look_ahead 1 "
+        << " -preset " << preset << " -look_ahead 1 "
         << (g_config.enable_10bit ? "-vf vpp_qsv=format=p010le " : "");
 
     } else if (g_config.encoder == "hevc_amf") {
+        std::string qual = "balanced";
+        if (profile == "speed") qual = "speed";
+        else if (profile == "quality") qual = "quality";
+
         cmd << "-rc:v cqp -qp_i:v " << q
         << " -qp_p:v " << q
-        << " -quality:v balanced " << pix_fmt;
+        << " -quality:v " << qual << " " << pix_fmt;
+
+    } else if (g_config.encoder == "hevc_vaapi") {
+        // En VAAPI, el "profile" suele mapearse a opciones específicas, por simplicidad usamos default
+        // VAAPI AMD/Intel no usa presets de la misma forma que libx265, pero podemos intentar setear la calidad global
+        cmd << "-rc_mode CQP -global_quality " << q << " ";
 
     } else if (g_config.encoder == "hevc_videotoolbox") {
-        int vt_q = std::max(1, 100 - (q * 2));
-        cmd << "-q:v " << vt_q << " " << pix_fmt;
+        cmd << "-q:v " << q << " " << pix_fmt;
 
     } else {
         // libx265 / software
-        cmd << "-crf:v " << q << " -preset medium " << pix_fmt;
+        std::string preset = "medium";
+        if (profile == "speed") preset = "fast";
+        else if (profile == "quality") preset = "slow";
+        cmd << "-crf:v " << q << " -preset " << preset << " " << pix_fmt;
     }
 
     // GOP
@@ -850,6 +955,16 @@ void setupConfig() {
             int c = std::stoi(trim(input));
             if (c >= 1 && c <= (int)encoders.size()) {
                 g_config.encoder = encoders[c - 1].id;
+
+                // Si la etiqueta contenía el nodo [dev/dri/renderD...], extraerlo
+                size_t start_bracket = encoders[c - 1].label.find("[/dev/");
+                if (start_bracket != std::string::npos) {
+                    size_t end_bracket = encoders[c - 1].label.find("]", start_bracket);
+                    if (end_bracket != std::string::npos) {
+                        g_config.hwaccel_device = encoders[c - 1].label.substr(start_bracket + 1, end_bracket - start_bracket - 1);
+                    }
+                }
+
                 std::cout << (g_config.language == "es" ? "Seleccionado: " : "Selected: ")
                 << encoders[c - 1].label << "\n";
                 break;
@@ -858,19 +973,51 @@ void setupConfig() {
         std::cout << (g_config.language == "es" ? "Opción inválida.\n" : "Invalid option.\n");
     }
 
+    // Perfil de Encoding
+    #if !defined(__APPLE__)
+    if (g_config.encoder != "hevc_videotoolbox") {
+        while (true) {
+            std::cout << (g_config.language == "es"
+            ? "\nSelecciona el perfil de compresión:\n  1) Speed (Más rápido)\n  2) Balanced (Balanceado)\n  3) Quality (Mejor calidad)\n> "
+            : "\nSelect compression profile:\n  1) Speed (Faster)\n  2) Balanced\n  3) Quality (Better quality)\n> ");
+            std::getline(std::cin, input);
+            std::string t_in = trim(input);
+            if (t_in == "1") { g_config.encoder_profile = "speed"; break; }
+            if (t_in == "2") { g_config.encoder_profile = "balanced"; break; }
+            if (t_in == "3") { g_config.encoder_profile = "quality"; break; }
+        }
+    }
+    #endif
+
     // Capacidades 10bit
     verifyHardwareCapabilities();
 
     // Calidad Q
     while (true) {
+        #ifdef __APPLE__
+        std::cout << (g_config.language == "es"
+        ? "Introduce el nivel de calidad (1 a 100, mayor es mejor calidad, recomendado 60-80): "
+        : "Enter quality level (1 to 100, higher is better quality, suggested 60-80): ");
+        #else
         std::cout << t("q_prompt");
+        #endif
+
         std::getline(std::cin, input);
         try {
             int q = std::stoi(trim(input));
+
+            #ifdef __APPLE__
+            if (q >= 1 && q <= 100) { g_config.quality_q = q; break; }
+            std::cout << (g_config.language == "es"
+            ? "Valor fuera de rango. Ingresa un número entre 1 y 100.\n"
+            : "Out of range. Enter a number between 1 and 100.\n");
+            #else
             if (q >= 0 && q <= 51) { g_config.quality_q = q; break; }
             std::cout << (g_config.language == "es"
             ? "Valor fuera de rango. Ingresa un número entre 0 y 51.\n"
             : "Out of range. Enter a number between 0 and 51.\n");
+            #endif
+
         } catch (...) {
             std::cout << (g_config.language == "es" ? "Valor inválido.\n" : "Invalid value.\n");
         }
