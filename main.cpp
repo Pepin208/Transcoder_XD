@@ -743,11 +743,12 @@ std::string buildFfmpegCommand(
     std::string profile = g_config.encoder_profile;
 
     if (g_config.encoder == "hevc_nvenc") {
-        std::string preset = "p4"; // balanced
-        std::string extra_args = "";
+        std::string preset = "p4";
+        std::string extra_args = "-rc-lookahead 120 -bf 3 -b_ref_mode middle -spatial-aq 1 -temporal-aq 1 ";
 
         if (profile == "speed") {
             preset = "p3";
+            extra_args = "-rc-lookahead 60 -bf 3 -spatial-aq 1 ";
         } else if (profile == "quality") {
             preset = "p6";
             extra_args = "-rc-lookahead 240 -bf 4 -b_ref_mode middle -spatial-aq 1 -temporal-aq 1 ";
@@ -758,14 +759,15 @@ std::string buildFfmpegCommand(
         << " -preset " << preset << " " << extra_args << pix_fmt;
 
     } else if (g_config.encoder == "hevc_qsv") {
-        std::string preset = "medium"; // balanced
-        std::string extra_args = "-look_ahead 1 ";
+        std::string preset = "medium";
+        std::string extra_args = "-look_ahead_depth 70 -bf 5 -b_strategy 1 ";
 
         if (profile == "speed") {
             preset = "veryfast";
+            extra_args = "-look_ahead_depth 40 -bf 3 ";
         } else if (profile == "quality") {
             preset = "slow";
-            extra_args = "-look_ahead_depth 240 -bf 7 -b_strategy 1 ";
+            extra_args = "-look_ahead_depth 100 -bf 7 -b_strategy 1 ";
         }
 
         cmd << "-global_quality:v " << q
@@ -774,13 +776,14 @@ std::string buildFfmpegCommand(
 
     } else if (g_config.encoder == "hevc_amf") {
         std::string qual = "balanced";
-        std::string extra_args = "";
+        std::string extra_args = "-bf 3 ";
 
         if (profile == "speed") {
             qual = "speed";
+            extra_args = "-bf 2 ";
         } else if (profile == "quality") {
             qual = "quality";
-            extra_args = "-bf 3 ";
+            extra_args = "-bf 4 ";
         }
 
         cmd << "-rc:v cqp -qp_i:v " << q
@@ -789,8 +792,6 @@ std::string buildFfmpegCommand(
 
     } else if (g_config.encoder == "hevc_vaapi") {
         std::string extra_args = "-bf 4 ";
-        // Si quisieras inyectar algo extra en Quality para VAAPI, sería aquí.
-        // Por ahora mantenemos CQP y -bf 4 fijos para máxima compresión.
         cmd << "-rc_mode CQP -global_quality " << q << " " << extra_args;
 
     } else if (g_config.encoder == "hevc_videotoolbox") {
@@ -799,10 +800,11 @@ std::string buildFfmpegCommand(
     } else {
         // libx265 / software
         std::string preset = "medium";
-        std::string extra_args = "";
+        std::string extra_args = "-x265-params \"rc-lookahead=120:bframes=6:b-adapt=2\" ";
 
         if (profile == "speed") {
             preset = "fast";
+            extra_args = "-x265-params \"rc-lookahead=60:bframes=4\" ";
         } else if (profile == "quality") {
             preset = "slow";
             extra_args = "-x265-params \"rc-lookahead=240:bframes=8:b-adapt=2\" ";
