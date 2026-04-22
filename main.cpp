@@ -153,11 +153,19 @@ bool loadConfig() {
         } else if (key == "QUALITY_Q") {
             try {
                 int q = std::stoi(value);
+                #ifdef __APPLE__
+                if (q >= 1 && q <= 100) g_config.quality_q = q;
+                else {
+                    std::cerr << "[WARN] QUALITY_Q fuera de rango (1-100), ignorado: " << value << "\n";
+                    g_config.quality_q = -1;
+                }
+                #else
                 if (q >= 0 && q <= 51) g_config.quality_q = q;
                 else {
                     std::cerr << "[WARN] QUALITY_Q fuera de rango (0-51), ignorado: " << value << "\n";
                     g_config.quality_q = -1;
                 }
+                #endif
             } catch (...) {
                 std::cerr << "[WARN] QUALITY_Q inválido en user.cfg: " << value << "\n";
                 g_config.quality_q = -1;
@@ -720,9 +728,13 @@ std::string buildFfmpegCommand(
     // Input
     cmd << "-i \"" << input_file << "\" ";
 
-    // Si es VAAPI, inyectamos el filtro de formato
+    // Si es VAAPI, inyectamos el filtro de formato manteniendo 10-bit si es necesario
     if (g_config.encoder == "hevc_vaapi") {
-        cmd << "-vf \"format=nv12,hwupload\" ";
+        if (g_config.enable_10bit) {
+            cmd << "-vf \"format=p010le,hwupload\" ";
+        } else {
+            cmd << "-vf \"format=nv12,hwupload\" ";
+        }
     }
 
     // Encoder + parámetros de calidad
@@ -732,35 +744,54 @@ std::string buildFfmpegCommand(
 
     if (g_config.encoder == "hevc_nvenc") {
         std::string preset = "p4"; // balanced
-        if (profile == "speed") preset = "p1";
-        else if (profile == "quality") preset = "p7";
+        std::string extra_args = "";
+
+        if (profile == "speed") {
+            preset = "p3";
+        } else if (profile == "quality") {
+            preset = "p6";
+            extra_args = "-rc-lookahead 240 -bf 4 -b_ref_mode middle -spatial-aq 1 -temporal-aq 1 ";
+        }
 
         cmd << "-rc:v vbr -cq:v " << q
         << " -qmin:v " << q << " -qmax:v " << q
-        << " -preset " << preset << " " << pix_fmt;
+        << " -preset " << preset << " " << extra_args << pix_fmt;
 
     } else if (g_config.encoder == "hevc_qsv") {
         std::string preset = "medium"; // balanced
-        if (profile == "speed") preset = "veryfast";
-        else if (profile == "quality") preset = "veryslow";
+        std::string extra_args = "-look_ahead 1 ";
+
+        if (profile == "speed") {
+            preset = "veryfast";
+        } else if (profile == "quality") {
+            preset = "slow";
+            extra_args = "-look_ahead_depth 240 -bf 7 -b_strategy 1 ";
+        }
 
         cmd << "-global_quality:v " << q
-        << " -preset " << preset << " -look_ahead 1 "
+        << " -preset " << preset << " " << extra_args
         << (g_config.enable_10bit ? "-vf vpp_qsv=format=p010le " : "");
 
     } else if (g_config.encoder == "hevc_amf") {
         std::string qual = "balanced";
-        if (profile == "speed") qual = "speed";
-        else if (profile == "quality") qual = "quality";
+        std::string extra_args = "";
+
+        if (profile == "speed") {
+            qual = "speed";
+        } else if (profile == "quality") {
+            qual = "quality";
+            extra_args = "-bf 3 ";
+        }
 
         cmd << "-rc:v cqp -qp_i:v " << q
         << " -qp_p:v " << q
-        << " -quality:v " << qual << " " << pix_fmt;
+        << " -quality:v " << qual << " " << extra_args << pix_fmt;
 
     } else if (g_config.encoder == "hevc_vaapi") {
-        // En VAAPI, el "profile" suele mapearse a opciones específicas, por simplicidad usamos default
-        // VAAPI AMD/Intel no usa presets de la misma forma que libx265, pero podemos intentar setear la calidad global
-        cmd << "-rc_mode CQP -global_quality " << q << " ";
+        std::string extra_args = "-bf 4 ";
+        // Si quisieras inyectar algo extra en Quality para VAAPI, sería aquí.
+        // Por ahora mantenemos CQP y -bf 4 fijos para máxima compresión.
+        cmd << "-rc_mode CQP -global_quality " << q << " " << extra_args;
 
     } else if (g_config.encoder == "hevc_videotoolbox") {
         cmd << "-q:v " << q << " " << pix_fmt;
@@ -768,9 +799,16 @@ std::string buildFfmpegCommand(
     } else {
         // libx265 / software
         std::string preset = "medium";
-        if (profile == "speed") preset = "fast";
-        else if (profile == "quality") preset = "slow";
-        cmd << "-crf:v " << q << " -preset " << preset << " " << pix_fmt;
+        std::string extra_args = "";
+
+        if (profile == "speed") {
+            preset = "fast";
+        } else if (profile == "quality") {
+            preset = "slow";
+            extra_args = "-x265-params \"rc-lookahead=240:bframes=8:b-adapt=2\" ";
+        }
+
+        cmd << "-crf:v " << q << " -preset " << preset << " " << extra_args << pix_fmt;
     }
 
     // GOP
