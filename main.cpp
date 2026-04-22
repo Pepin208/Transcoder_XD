@@ -655,8 +655,27 @@ std::vector<EncoderOption> detectEncoders() {
 
 void verifyHardwareCapabilities() {
     if (g_config.encoder == "libx265") { g_config.enable_10bit = true; return; }
-    std::string output = execCommand(getBinPath("ffmpeg") + " -h encoder=" + g_config.encoder + " 2>&1");
-    if (output.find("p010le") != std::string::npos) {
+
+    bool supports_10bit = false;
+
+    if (g_config.encoder == "hevc_vaapi") {
+        std::string cmd = getBinPath("ffmpeg");
+        if (!g_config.hwaccel_device.empty()) {
+            cmd += " -vaapi_device " + g_config.hwaccel_device;
+        }
+        cmd += " -f lavfi -i nullsrc=s=256x256:d=1 -vf \"format=p010le,hwupload\" -c:v hevc_vaapi -frames:v 1 -f null -";
+        #ifdef _WIN32
+        cmd += " >nul 2>&1";
+        #else
+        cmd += " >/dev/null 2>&1";
+        #endif
+        supports_10bit = (system(cmd.c_str()) == 0);
+    } else {
+        std::string output = execCommand(getBinPath("ffmpeg") + " -h encoder=" + g_config.encoder + " 2>&1");
+        supports_10bit = (output.find("p010le") != std::string::npos);
+    }
+
+    if (supports_10bit) {
         std::cout << "\n" << t("10bit_prompt");
         std::string input;
         std::getline(std::cin, input);
