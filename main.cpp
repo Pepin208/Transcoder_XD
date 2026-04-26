@@ -749,10 +749,11 @@ std::string buildFfmpegCommand(
 
     // Si es VAAPI, inyectamos el filtro de formato manteniendo 10-bit si es necesario
     if (g_config.encoder == "hevc_vaapi") {
+        // Usamos scale_vaapi para cambiar el formato dentro de la GPU (necesario en Intel)
         if (g_config.enable_10bit) {
-            cmd << "-vf \"format=p010le,hwupload\" ";
+            cmd << "-vf \"scale_vaapi=format=p010le\" ";
         } else {
-            cmd << "-vf \"format=nv12,hwupload\" ";
+            cmd << "-vf \"scale_vaapi=format=nv12\" ";
         }
     }
 
@@ -841,7 +842,7 @@ std::string buildFfmpegCommand(
     for (int idx : selected_subs)   cmd << "-map 0:" << idx << " ";
 
     // Audio
-    cmd << "-c:a libopus -b:a " << g_config.opus_bitrate << "k -vbr on ";
+    cmd << "-af \"aformat=channel_layouts=stereo\" -ac 2 -c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr:a on ";
 
     // Subtítulos, capítulos y attachments
     cmd << "-c:s copy -map_chapters 0 -map 0:t? -c:t copy ";
