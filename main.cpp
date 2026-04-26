@@ -842,7 +842,7 @@ std::string buildFfmpegCommand(
     for (int idx : selected_subs)   cmd << "-map 0:" << idx << " ";
 
     // Audio
-    cmd << "-af \"aformat=channel_layouts=stereo\" -ac 2 -c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr:a on ";
+    cmd << "-af \"aformat=channel_layouts=stereo\" -ac 2 -c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr on ";
 
     // Subtítulos, capítulos y attachments
     cmd << "-c:s copy -map_chapters 0 -map 0:t? -c:t copy ";
