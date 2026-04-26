@@ -812,7 +812,7 @@ std::string buildFfmpegCommand(
 
     } else if (g_config.encoder == "hevc_vaapi") {
         std::string extra_args = "-bf 4 ";
-        cmd << "-rc_mode CQP -global_quality " << q << " " << extra_args;
+        cmd << "-rc_mode:v CQP -global_quality:v " << q << " " << extra_args;
 
     } else if (g_config.encoder == "hevc_videotoolbox") {
         cmd << "-q:v " << q << " " << pix_fmt;
@@ -842,7 +842,7 @@ std::string buildFfmpegCommand(
     for (int idx : selected_subs)   cmd << "-map 0:" << idx << " ";
 
     // Audio: Forzamos el bitrate numérico y activamos VBR de forma explícita
-    cmd << "-c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr 1 -af \"aformat=channel_layouts=stereo\" -ac 2 ";
+    cmd << "-c:a libopus -b:a " << g_config.opus_bitrate << "k -vbr on -af \"aformat=channel_layouts=stereo\" -ac 2 ";
 
     // Subtítulos, capítulos y attachments
     cmd << "-c:s copy -map_chapters 0 -map 0:t? -c:t copy ";
