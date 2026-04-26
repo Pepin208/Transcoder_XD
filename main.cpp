@@ -841,8 +841,8 @@ std::string buildFfmpegCommand(
     for (int idx : selected_audios) cmd << "-map 0:" << idx << " ";
     for (int idx : selected_subs)   cmd << "-map 0:" << idx << " ";
 
-    // Audio
-    cmd << "-af \"aformat=channel_layouts=stereo\" -ac 2 -c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr on ";
+    // Audio: Forzamos el bitrate numérico y activamos VBR de forma explícita
+    cmd << "-c:a libopus -b:a " << g_config.opus_bitrate << "000 -vbr 1 -af \"aformat=channel_layouts=stereo\" -ac 2 ";
 
     // Subtítulos, capítulos y attachments
     cmd << "-c:s copy -map_chapters 0 -map 0:t? -c:t copy ";
